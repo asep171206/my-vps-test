@@ -1,28 +1,66 @@
-name: Windows RDP
+name: Windows RDP (ngrok)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  rdp:
     runs-on: windows-latest
     steps:
-    - name: Enable RDP Access
+    - name: Setup and start RDP + ngrok
+      shell: pwsh
       run: |
-        echo "Membuat user baru..."
-        net user githubRDP 12345 /add
-        net localgroup administrators githubRDP /add
-        echo "Mengaktifkan Remote Desktop..."
+        Write-Output "== Membuat user rdp =="
+        $username = "githubRDP"
+        $password = "Tetek123"
+        if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
+          net user $username $password /add
+          net localgroup administrators $username /add
+        } else {
+          net user $username $password
+        }
+
+        Write-Output "== Mengaktifkan RDP & aturan firewall =="
         Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        echo "Mengunduh ngrok..."
-        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
-        Expand-Archive ngrok.zip
-        echo "Masukkan Token ngrok kamu"
-        .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
-        echo "Menjalankan tunnel RDP di port 3389..."
-        Start-Process -NoNewWindow .\ngrok\ngrok.exe tcp 3389
-        echo "RDP Siap digunakan"
-        sleep 99999
+
+        Write-Output "== Mengunduh ngrok =="
+        $zip = "ngrok.zip"
+        Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-windows-amd64.zip" -OutFile $zip
+        Expand-Archive $zip -DestinationPath . -Force
+
+        Write-Output "== Authtoken ngrok =="
+        if ($Env:NGROK_AUTH_TOKEN -and $Env:NGROK_AUTH_TOKEN -ne "") {
+          .\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+        }
+
+        Write-Output "== Menjalankan ngrok (tcp 3389) =="
+        Start-Process -FilePath .\ngrok.exe -ArgumentList "tcp 3389 --log=stdout" -WindowStyle Hidden
+        # tunggu sampai ngrok api tersedia dan ambil public_url
+        $public = $null
+        for ($i=0; $i -lt 60; $i++) {
+          try {
+            $tunnels = Invoke-RestMethod -Uri http://127.0.0.1:4040/api/tunnels -ErrorAction Stop
+            if ($tunnels.tunnels.Count -gt 0) {
+              $public = $tunnels.tunnels[0].public_url
+              break
+            }
+          } catch {}
+          Start-Sleep -Seconds 1
+        }
+        if (-not $public) {
+          Write-Error "Ngrok tidak muncul dalam 60 detik. Periksa log."
+          exit 1
+        }
+
+        Write-Output "===== NGROK TUNNEL ====="
+        Write-Output $public
+        Write-Output "========================"
+        Write-Output "Gunakan host:port (hilangkan tcp://) di Remote Desktop."
+        Write-Output "Username: $username"
+        Write-Output "Password: (password yang ditentukan dalam workflow)"
+
+        # jaga agar runner tetap hidup (maks 6 jam)
+        Start-Sleep -Seconds 21600
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
